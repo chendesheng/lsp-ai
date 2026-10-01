@@ -375,12 +375,38 @@ pub(crate) struct Action {
     pub(crate) post_process: PostProcess,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) enum DiagnosticPromptFormat {
+    #[default]
+    Messages,
+    Anthropic,
+    Gemini,
+}
+
+/// Optional dynamic Explain/Fix actions for diagnostics supplied by the client.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DiagnosticActionsConfig {
+    pub(crate) model: String,
+    #[serde(default)]
+    pub(crate) parameters: Kwargs,
+    #[serde(default = "explanation_severity_default")]
+    pub(crate) explanation_severity: lsp_types::DiagnosticSeverity,
+    #[serde(skip)]
+    pub(crate) prompt_format: DiagnosticPromptFormat,
+}
+
+fn explanation_severity_default() -> lsp_types::DiagnosticSeverity {
+    lsp_types::DiagnosticSeverity::ERROR
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ValidConfig {
     pub(crate) memory: ValidMemoryBackend,
     pub(crate) models: HashMap<String, ValidModel>,
     pub(crate) completion: Option<Completion>,
+    pub(crate) diagnostic_actions: Option<DiagnosticActionsConfig>,
     #[serde(default)]
     pub(crate) actions: Vec<Action>,
     #[serde(default)]
@@ -411,6 +437,26 @@ impl Config {
             Some(configuration_args) => serde_json::from_value(configuration_args)?,
             None => anyhow::bail!("lsp-ai does not currently provide a default configuration. Please pass a configuration. See https://github.com/SilasMarvin/lsp-ai for configuration options and examples"),
         };
+        let mut valid_args: ValidConfig = valid_args;
+        if let Some(actions) = &mut valid_args.diagnostic_actions {
+            anyhow::ensure!(
+                valid_args.models.contains_key(&actions.model),
+                "Diagnostic actions model `{}` is not configured",
+                actions.model
+            );
+            anyhow::ensure!(
+                !matches!(
+                    valid_args.models.get(&actions.model),
+                    Some(ValidModel::MistralFIM(_))
+                ),
+                "Diagnostic actions require an instruction model, not a FIM backend"
+            );
+            actions.prompt_format = match valid_args.models.get(&actions.model) {
+                Some(ValidModel::Anthropic(_)) => DiagnosticPromptFormat::Anthropic,
+                Some(ValidModel::Gemini(_)) => DiagnosticPromptFormat::Gemini,
+                _ => DiagnosticPromptFormat::Messages,
+            };
+        }
         let client_params: ValidClientParams = serde_json::from_value(args)?;
         Ok(Self {
             config: valid_args,
@@ -472,6 +518,7 @@ impl Config {
                 memory: ValidMemoryBackend::FileStore(FileStore { crawl: None }),
                 models: HashMap::new(),
                 completion: None,
+                diagnostic_actions: None,
                 actions: vec![],
                 chats: vec![],
             },
@@ -485,6 +532,7 @@ impl Config {
                 memory: ValidMemoryBackend::VectorStore(vector_store),
                 models: HashMap::new(),
                 completion: None,
+                diagnostic_actions: None,
                 actions: vec![],
                 chats: vec![],
             },

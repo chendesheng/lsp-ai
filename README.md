@@ -103,3 +103,7 @@ There is so much to do for this project and incredible new research and tools co
 - Implement semantic search-powered context building (This could be incredibly cool and powerful). Planning to use [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) to chunk code correctly.
 - Support for additional backends
 - Exploration of agent-based systems
+
+## Explain and fix errors
+
+LSP-AI can generate dynamic `Explain: ...` and `Fix: ...` code actions from compiler diagnostics. Explanations appear as diagnostics at the original position; fixes return versioned code edits. See [configuration and Helix usage](docs/diagnostic-actions.md).

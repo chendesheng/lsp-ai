@@ -21,6 +21,7 @@ use tracing_subscriber::{EnvFilter, FmtSubscriber};
 mod config;
 mod crawl;
 mod custom_requests;
+mod diagnostic_actions;
 mod embedding_models;
 mod memory_backends;
 mod memory_worker;
@@ -155,9 +156,11 @@ fn main() -> Result<()> {
 fn main_loop(connection: Connection, args: serde_json::Value) -> Result<()> {
     // Build our configuration
     let config = Config::new(args)?;
+    let diagnostic_actions_enabled = config.config.diagnostic_actions.is_some();
 
     // Wrap the connection for sharing between threads
     let connection = Arc::new(connection);
+    let diagnostic_actions = Arc::new(diagnostic_actions::DiagnosticActions::default());
 
     // Our channel we use to communicate with our transformer worker
     let (transformer_tx, transformer_rx) = mpsc::channel();
@@ -180,6 +183,7 @@ fn main_loop(connection: Connection, args: serde_json::Value) -> Result<()> {
     let thread_connection = connection.clone();
     let thread_memory_tx = memory_tx.clone();
     let thread_config = config.clone();
+    let thread_diagnostic_actions = diagnostic_actions.clone();
     let transformer_worker_thread = thread::spawn(move || {
         transformer_worker::run(
             transformer_backends,
@@ -187,6 +191,7 @@ fn main_loop(connection: Connection, args: serde_json::Value) -> Result<()> {
             transformer_rx,
             thread_connection,
             thread_config,
+            thread_diagnostic_actions,
         )
     });
 
@@ -233,8 +238,17 @@ fn main_loop(connection: Connection, args: serde_json::Value) -> Result<()> {
                 } else if request_is::<CodeActionRequest>(&req) {
                     match cast::<CodeActionRequest>(req) {
                         Ok((id, params)) => {
-                            let code_action_request =
-                                transformer_worker::CodeActionRequest::new(id, params);
+                            // Capture the document revision at receipt, before asynchronous chat/action listing.
+                            let dynamic_actions = if diagnostic_actions_enabled {
+                                diagnostic_actions.actions(&params)?
+                            } else {
+                                Vec::new()
+                            };
+                            let code_action_request = transformer_worker::CodeActionRequest::new(
+                                id,
+                                params,
+                                dynamic_actions,
+                            );
                             transformer_tx
                                 .send(WorkerRequest::CodeActionRequest(code_action_request))?;
                         }
@@ -258,12 +272,31 @@ fn main_loop(connection: Connection, args: serde_json::Value) -> Result<()> {
             Message::Notification(not) => {
                 if notification_is::<lsp_types::notification::DidOpenTextDocument>(&not) {
                     let params: DidOpenTextDocumentParams = serde_json::from_value(not.params)?;
+                    if diagnostic_actions_enabled {
+                        diagnostic_actions.opened(&params, &connection)?;
+                    }
                     memory_tx.send(memory_worker::WorkerRequest::DidOpenTextDocument(params))?;
                 } else if notification_is::<lsp_types::notification::DidChangeTextDocument>(&not) {
                     let params: DidChangeTextDocumentParams = serde_json::from_value(not.params)?;
+                    if diagnostic_actions_enabled {
+                        diagnostic_actions.changed(&params, &connection)?;
+                    }
                     memory_tx.send(memory_worker::WorkerRequest::DidChangeTextDocument(params))?;
+                } else if notification_is::<lsp_types::notification::DidCloseTextDocument>(&not) {
+                    let params: lsp_types::DidCloseTextDocumentParams =
+                        serde_json::from_value(not.params)?;
+                    if diagnostic_actions_enabled {
+                        diagnostic_actions.closed(&params.text_document.uri, &connection)?;
+                    }
                 } else if notification_is::<lsp_types::notification::DidRenameFiles>(&not) {
                     let params: RenameFilesParams = serde_json::from_value(not.params)?;
+                    for file in params.files.iter().filter(|_| diagnostic_actions_enabled) {
+                        diagnostic_actions.renamed(
+                            &file.old_uri.parse()?,
+                            file.new_uri.parse()?,
+                            &connection,
+                        )?;
+                    }
                     memory_tx.send(memory_worker::WorkerRequest::DidRenameFiles(params))?;
                 }
             }

@@ -20,6 +20,7 @@ use tracing::{error, info, instrument};
 use crate::config::{self, Config};
 use crate::custom_requests::generation::{GenerateResult, GenerationParams};
 use crate::custom_requests::generation_stream::GenerationStreamParams;
+use crate::diagnostic_actions::{ContentModified, DiagnosticActions};
 use crate::memory_backends::Prompt;
 use crate::memory_worker::{self, FileRequest, FilterRequest, PromptRequest};
 use crate::transformer_backends::TransformerBackend;
@@ -69,11 +70,20 @@ impl GenerationStreamRequest {
 pub(crate) struct CodeActionRequest {
     id: RequestId,
     params: CodeActionParams,
+    diagnostic_actions: Vec<CodeAction>,
 }
 
 impl CodeActionRequest {
-    pub(crate) fn new(id: RequestId, params: CodeActionParams) -> Self {
-        Self { id, params }
+    pub(crate) fn new(
+        id: RequestId,
+        params: CodeActionParams,
+        diagnostic_actions: Vec<CodeAction>,
+    ) -> Self {
+        Self {
+            id,
+            params,
+            diagnostic_actions,
+        }
     }
 }
 
@@ -235,6 +245,7 @@ pub(crate) fn run(
     transformer_rx: std::sync::mpsc::Receiver<WorkerRequest>,
     connection: Arc<Connection>,
     config: Config,
+    diagnostic_actions: Arc<DiagnosticActions>,
 ) {
     if let Err(e) = do_run(
         transformer_backends,
@@ -242,6 +253,7 @@ pub(crate) fn run(
         transformer_rx,
         connection,
         config,
+        diagnostic_actions,
     ) {
         error!("error in transformer worker: {e:?}")
     }
@@ -253,6 +265,7 @@ fn do_run(
     transformer_rx: std::sync::mpsc::Receiver<WorkerRequest>,
     connection: Arc<Connection>,
     config: Config,
+    diagnostic_actions: Arc<DiagnosticActions>,
 ) -> anyhow::Result<()> {
     let transformer_backends = Arc::new(transformer_backends);
 
@@ -266,6 +279,7 @@ fn do_run(
         let task_transformer_backends = transformer_backends.clone();
         let task_memory_backend_tx = memory_backend_tx.clone();
         let task_config = config.clone();
+        let task_diagnostic_actions = diagnostic_actions.clone();
         TOKIO_RUNTIME.spawn(async move {
             dispatch_request(
                 request,
@@ -273,6 +287,7 @@ fn do_run(
                 task_transformer_backends,
                 task_memory_backend_tx,
                 task_config,
+                task_diagnostic_actions,
             )
             .await;
         });
@@ -330,29 +345,79 @@ fn do_run(
     }
 }
 
-#[instrument(skip(connection, transformer_backends, memory_backend_tx, config))]
+#[instrument(skip(
+    connection,
+    transformer_backends,
+    memory_backend_tx,
+    config,
+    diagnostic_actions
+))]
 async fn dispatch_request(
     request: WorkerRequest,
     connection: Arc<Connection>,
     transformer_backends: Arc<HashMap<String, Box<dyn TransformerBackend + Send + Sync>>>,
     memory_backend_tx: std::sync::mpsc::Sender<memory_worker::WorkerRequest>,
     config: Config,
+    diagnostic_actions: Arc<DiagnosticActions>,
 ) {
-    let response = match generate_response(
-        request.clone(),
-        transformer_backends,
-        memory_backend_tx,
-        config,
-    )
-    .await
-    {
+    let result = async {
+        if let WorkerRequest::CodeActionResolveRequest(action) = &request {
+            if DiagnosticActions::is_action(&action.params) {
+                let action_config = config
+                    .config
+                    .diagnostic_actions
+                    .as_ref()
+                    .context("Diagnostic actions are not enabled")?;
+                let backend = transformer_backends
+                    .get(&action_config.model)
+                    .context("Diagnostic actions model is not configured")?;
+                let resolved = diagnostic_actions
+                    .resolve(&action.params, action_config, backend.as_ref(), &connection)
+                    .await?;
+                return anyhow::Ok(Response {
+                    id: action.id.clone(),
+                    result: Some(serde_json::to_value(resolved)?),
+                    error: None,
+                });
+            }
+        }
+        let mut response = generate_response(
+            request.clone(),
+            transformer_backends,
+            memory_backend_tx,
+            config,
+        )
+        .await?;
+        if let WorkerRequest::CodeActionRequest(action) = &request {
+            response
+                .result
+                .as_mut()
+                .and_then(|result| result.as_array_mut())
+                .context("Code action result is not a list")?
+                .extend(
+                    action
+                        .diagnostic_actions
+                        .iter()
+                        .map(|action| serde_json::to_value(action).unwrap()),
+                );
+        }
+        Ok(response)
+    }
+    .await;
+    let response = match result {
         Ok(response) => response,
         Err(e) => {
             error!("generating response: {e:?}");
             Response {
                 id: request.get_id(),
                 result: None,
-                error: Some(e.to_response_error(-32603)),
+                error: Some(e.to_response_error(
+                    if e.downcast_ref::<ContentModified>().is_some() {
+                        -32801
+                    } else {
+                        -32603
+                    },
+                )),
             }
         }
     };
