@@ -1,4 +1,4 @@
-# Extract a selected region into a function
+# Refactor selected code
 
 Enable selected-region refactoring in `initializationOptions`:
 
@@ -48,6 +48,48 @@ editor applies the edit with its normal undo support. These structural checks do
 not prove semantic equivalence: review the result and let your compiler/tests
 check the generated code.
 
+## Rewrite using the first selected comment line
+
+Start the selected range with a nonempty `//` or `--` comment describing the
+change, followed by the code to modify. LSP-AI additionally offers
+**Refactor: Follow instruction**, with kind `refactor.rewrite.instruction`.
+It uses the same `refactor_actions` model and parameters; no extra configuration
+is needed. For example, select the whole comment and function:
+
+```typescript
+// rewrite use arrow function
+function add(a: number, b: number): number {
+  return a + b;
+}
+```
+
+Or select the comment and definition in Haskell:
+
+```haskell
+-- rewrite use list comprehension
+doubleEvens xs = map (* 2) (filter even xs)
+```
+
+Instructions can also request async/await, try/catch or another code change.
+The literal first selected line must be an instruction comment; leading blank
+lines, empty comments and comment-only selections do not enable this action.
+The instruction comment remains in the file. Only the code after that line,
+through the end of the selection, is replaced. Include function signatures,
+imports or surrounding constructs in the target if changing them is necessary.
+For an import before the instruction comment, add it manually or include an
+appropriate import location after the comment in the selection.
+
+The model receives a separate instruction field, exact target code/range, full
+selection and nearby read-only context. It returns a JSON replacement for the
+target, which becomes one versioned edit at its known range. Identical code
+elsewhere is unaffected. File-version checks, context limits and normal undo
+apply to both refactoring actions. Empty, unchanged, malformed or unsupported
+responses cannot silently modify other files or code outside the selected target;
+an explicit empty replacement can delete the selected target code.
+
+Select comment plus code, press `Space a`, then **Refactor: Follow instruction**.
+After rebuilding LSP-AI, use `:lsp-restart` to load the new binary.
+
 ## Helix
 
 ```toml
@@ -78,3 +120,9 @@ The protocol test uses a local mock model without an API key. It exercises exact
 selection payloads, action-kind filters, multiple versioned edits, independent
 refactor configuration, coexistence with Explain/Fix, incremental changes,
 stale/in-flight rejection, close/reopen and rename.
+
+For instruction-based rewriting, run the additional mock-model protocol test:
+
+```sh
+python3 crates/lsp-ai/tests/instruction_actions_protocol.py target/release/lsp-ai
+```

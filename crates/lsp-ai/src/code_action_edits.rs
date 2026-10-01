@@ -66,21 +66,7 @@ pub(crate) fn fix_edits(
     visible_code: &str,
     response: &str,
 ) -> anyhow::Result<Vec<TextEdit>> {
-    let response = response.trim();
-    let response = if let Some(fenced) = response
-        .strip_prefix("```json")
-        .or_else(|| response.strip_prefix("```"))
-    {
-        fenced
-            .trim()
-            .strip_suffix("```")
-            .context("Unclosed JSON fence")?
-            .trim()
-    } else {
-        response
-    };
-    let fix: Fix =
-        serde_json::from_str(response).context("Model did not return valid edit JSON")?;
+    let fix: Fix = parse_edit_response(response)?;
     anyhow::ensure!(!fix.edits.is_empty(), "Model returned no edits");
     let source = text.to_string();
     let mut offsets = vec![];
@@ -123,4 +109,23 @@ pub(crate) fn fix_edits(
             new_text,
         })
         .collect())
+}
+
+pub(crate) fn parse_edit_response<T: serde::de::DeserializeOwned>(
+    response: &str,
+) -> anyhow::Result<T> {
+    let response = response.trim();
+    let response = if let Some(fenced) = response
+        .strip_prefix("```json")
+        .or_else(|| response.strip_prefix("```"))
+    {
+        fenced
+            .trim()
+            .strip_suffix("```")
+            .context("Unclosed JSON fence")?
+            .trim()
+    } else {
+        response
+    };
+    serde_json::from_str(response).context("Model did not return valid edit JSON")
 }
