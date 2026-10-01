@@ -376,7 +376,7 @@ pub(crate) struct Action {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) enum DiagnosticPromptFormat {
+pub(crate) enum ActionPromptFormat {
     #[default]
     Messages,
     Anthropic,
@@ -393,7 +393,18 @@ pub(crate) struct DiagnosticActionsConfig {
     #[serde(default = "explanation_severity_default")]
     pub(crate) explanation_severity: lsp_types::DiagnosticSeverity,
     #[serde(skip)]
-    pub(crate) prompt_format: DiagnosticPromptFormat,
+    pub(crate) prompt_format: ActionPromptFormat,
+}
+
+/// Optional selected-region refactoring, independent of diagnostic actions.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RefactorActionsConfig {
+    pub(crate) model: String,
+    #[serde(default)]
+    pub(crate) parameters: Kwargs,
+    #[serde(skip)]
+    pub(crate) prompt_format: ActionPromptFormat,
 }
 
 fn explanation_severity_default() -> lsp_types::DiagnosticSeverity {
@@ -407,6 +418,7 @@ pub(crate) struct ValidConfig {
     pub(crate) models: HashMap<String, ValidModel>,
     pub(crate) completion: Option<Completion>,
     pub(crate) diagnostic_actions: Option<DiagnosticActionsConfig>,
+    pub(crate) refactor_actions: Option<RefactorActionsConfig>,
     #[serde(default)]
     pub(crate) actions: Vec<Action>,
     #[serde(default)]
@@ -452,9 +464,28 @@ impl Config {
                 "Diagnostic actions require an instruction model, not a FIM backend"
             );
             actions.prompt_format = match valid_args.models.get(&actions.model) {
-                Some(ValidModel::Anthropic(_)) => DiagnosticPromptFormat::Anthropic,
-                Some(ValidModel::Gemini(_)) => DiagnosticPromptFormat::Gemini,
-                _ => DiagnosticPromptFormat::Messages,
+                Some(ValidModel::Anthropic(_)) => ActionPromptFormat::Anthropic,
+                Some(ValidModel::Gemini(_)) => ActionPromptFormat::Gemini,
+                _ => ActionPromptFormat::Messages,
+            };
+        }
+        if let Some(actions) = &mut valid_args.refactor_actions {
+            anyhow::ensure!(
+                valid_args.models.contains_key(&actions.model),
+                "Refactor actions model `{}` is not configured",
+                actions.model
+            );
+            anyhow::ensure!(
+                !matches!(
+                    valid_args.models.get(&actions.model),
+                    Some(ValidModel::MistralFIM(_))
+                ),
+                "Refactor actions require an instruction model, not a FIM backend"
+            );
+            actions.prompt_format = match valid_args.models.get(&actions.model) {
+                Some(ValidModel::Anthropic(_)) => ActionPromptFormat::Anthropic,
+                Some(ValidModel::Gemini(_)) => ActionPromptFormat::Gemini,
+                _ => ActionPromptFormat::Messages,
             };
         }
         let client_params: ValidClientParams = serde_json::from_value(args)?;
@@ -519,6 +550,7 @@ impl Config {
                 models: HashMap::new(),
                 completion: None,
                 diagnostic_actions: None,
+                refactor_actions: None,
                 actions: vec![],
                 chats: vec![],
             },
@@ -533,6 +565,7 @@ impl Config {
                 models: HashMap::new(),
                 completion: None,
                 diagnostic_actions: None,
+                refactor_actions: None,
                 actions: vec![],
                 chats: vec![],
             },
@@ -719,5 +752,28 @@ mod test {
             }
         });
         Config::new(args).unwrap();
+    }
+
+    #[test]
+    fn refactor_actions_validate_instruction_model_independently() {
+        let mut args = json!({"initializationOptions":{
+            "memory":{"file_store":{}},
+            "models":{"test":{"type":"open_ai","model":"mock"}},
+            "refactor_actions":{"model":"test"}
+        }});
+        let config = Config::new(args.clone()).unwrap();
+        assert!(config.config.diagnostic_actions.is_none());
+        assert!(config.config.refactor_actions.is_some());
+        args["initializationOptions"]["refactor_actions"]["model"] = json!("missing");
+        assert!(Config::new(args.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("not configured"));
+        args["initializationOptions"]["refactor_actions"]["model"] = json!("test");
+        args["initializationOptions"]["models"]["test"]["type"] = json!("mistral_fim");
+        assert!(Config::new(args)
+            .unwrap_err()
+            .to_string()
+            .contains("instruction model"));
     }
 }

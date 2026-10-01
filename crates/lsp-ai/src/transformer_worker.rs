@@ -20,7 +20,7 @@ use tracing::{error, info, instrument};
 use crate::config::{self, Config};
 use crate::custom_requests::generation::{GenerateResult, GenerationParams};
 use crate::custom_requests::generation_stream::GenerationStreamParams;
-use crate::diagnostic_actions::{ContentModified, DiagnosticActions};
+use crate::document_state::{ContentModified, DocumentStore as DiagnosticActions};
 use crate::memory_backends::Prompt;
 use crate::memory_worker::{self, FileRequest, FilterRequest, PromptRequest};
 use crate::transformer_backends::TransformerBackend;
@@ -70,19 +70,19 @@ impl GenerationStreamRequest {
 pub(crate) struct CodeActionRequest {
     id: RequestId,
     params: CodeActionParams,
-    diagnostic_actions: Vec<CodeAction>,
+    dynamic_actions: Vec<CodeAction>,
 }
 
 impl CodeActionRequest {
     pub(crate) fn new(
         id: RequestId,
         params: CodeActionParams,
-        diagnostic_actions: Vec<CodeAction>,
+        dynamic_actions: Vec<CodeAction>,
     ) -> Self {
         Self {
             id,
             params,
-            diagnostic_actions,
+            dynamic_actions,
         }
     }
 }
@@ -381,6 +381,26 @@ async fn dispatch_request(
                 });
             }
         }
+        if let WorkerRequest::CodeActionResolveRequest(action) = &request {
+            if DiagnosticActions::is_refactor_action(&action.params) {
+                let action_config = config
+                    .config
+                    .refactor_actions
+                    .as_ref()
+                    .context("Refactor actions are not enabled")?;
+                let backend = transformer_backends
+                    .get(&action_config.model)
+                    .context("Refactor actions model is not configured")?;
+                let resolved = diagnostic_actions
+                    .resolve_refactor(&action.params, action_config, backend.as_ref())
+                    .await?;
+                return anyhow::Ok(Response {
+                    id: action.id.clone(),
+                    result: Some(serde_json::to_value(resolved)?),
+                    error: None,
+                });
+            }
+        }
         let mut response = generate_response(
             request.clone(),
             transformer_backends,
@@ -396,7 +416,7 @@ async fn dispatch_request(
                 .context("Code action result is not a list")?
                 .extend(
                     action
-                        .diagnostic_actions
+                        .dynamic_actions
                         .iter()
                         .map(|action| serde_json::to_value(action).unwrap()),
                 );

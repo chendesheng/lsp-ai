@@ -104,6 +104,10 @@ There is so much to do for this project and incredible new research and tools co
 - Support for additional backends
 - Exploration of agent-based systems
 
+## Refactor selected code
+
+Select code and choose `Refactor: Extract function` to generate a same-file helper and call. This optional action is independent of diagnostics and returns versioned edits. See [configuration and Helix usage](docs/refactor-actions.md).
+
 ## Explain and fix errors
 
 LSP-AI can generate dynamic `Explain: ...` and `Fix: ...` code actions from compiler diagnostics. Explanations appear as diagnostics at the original position; fixes return versioned code edits. See [configuration and Helix usage](docs/diagnostic-actions.md).

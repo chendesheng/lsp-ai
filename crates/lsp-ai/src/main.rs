@@ -18,13 +18,17 @@ use std::{
 use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
+mod action_generation;
+mod code_action_edits;
 mod config;
 mod crawl;
 mod custom_requests;
 mod diagnostic_actions;
+mod document_state;
 mod embedding_models;
 mod memory_backends;
 mod memory_worker;
+mod refactor_actions;
 mod splitters;
 #[cfg(feature = "llama_cpp")]
 mod template;
@@ -157,10 +161,12 @@ fn main_loop(connection: Connection, args: serde_json::Value) -> Result<()> {
     // Build our configuration
     let config = Config::new(args)?;
     let diagnostic_actions_enabled = config.config.diagnostic_actions.is_some();
+    let refactor_actions_enabled = config.config.refactor_actions.is_some();
+    let track_documents = diagnostic_actions_enabled || refactor_actions_enabled;
 
     // Wrap the connection for sharing between threads
     let connection = Arc::new(connection);
-    let diagnostic_actions = Arc::new(diagnostic_actions::DiagnosticActions::default());
+    let diagnostic_actions = Arc::new(document_state::DocumentStore::default());
 
     // Our channel we use to communicate with our transformer worker
     let (transformer_tx, transformer_rx) = mpsc::channel();
@@ -239,11 +245,15 @@ fn main_loop(connection: Connection, args: serde_json::Value) -> Result<()> {
                     match cast::<CodeActionRequest>(req) {
                         Ok((id, params)) => {
                             // Capture the document revision at receipt, before asynchronous chat/action listing.
-                            let dynamic_actions = if diagnostic_actions_enabled {
+                            let mut dynamic_actions = if diagnostic_actions_enabled {
                                 diagnostic_actions.actions(&params)?
                             } else {
                                 Vec::new()
                             };
+                            if refactor_actions_enabled {
+                                dynamic_actions
+                                    .extend(diagnostic_actions.refactor_actions(&params)?);
+                            }
                             let code_action_request = transformer_worker::CodeActionRequest::new(
                                 id,
                                 params,
@@ -272,25 +282,25 @@ fn main_loop(connection: Connection, args: serde_json::Value) -> Result<()> {
             Message::Notification(not) => {
                 if notification_is::<lsp_types::notification::DidOpenTextDocument>(&not) {
                     let params: DidOpenTextDocumentParams = serde_json::from_value(not.params)?;
-                    if diagnostic_actions_enabled {
+                    if track_documents {
                         diagnostic_actions.opened(&params, &connection)?;
                     }
                     memory_tx.send(memory_worker::WorkerRequest::DidOpenTextDocument(params))?;
                 } else if notification_is::<lsp_types::notification::DidChangeTextDocument>(&not) {
                     let params: DidChangeTextDocumentParams = serde_json::from_value(not.params)?;
-                    if diagnostic_actions_enabled {
+                    if track_documents {
                         diagnostic_actions.changed(&params, &connection)?;
                     }
                     memory_tx.send(memory_worker::WorkerRequest::DidChangeTextDocument(params))?;
                 } else if notification_is::<lsp_types::notification::DidCloseTextDocument>(&not) {
                     let params: lsp_types::DidCloseTextDocumentParams =
                         serde_json::from_value(not.params)?;
-                    if diagnostic_actions_enabled {
+                    if track_documents {
                         diagnostic_actions.closed(&params.text_document.uri, &connection)?;
                     }
                 } else if notification_is::<lsp_types::notification::DidRenameFiles>(&not) {
                     let params: RenameFilesParams = serde_json::from_value(not.params)?;
-                    for file in params.files.iter().filter(|_| diagnostic_actions_enabled) {
+                    for file in params.files.iter().filter(|_| track_documents) {
                         diagnostic_actions.renamed(
                             &file.old_uri.parse()?,
                             file.new_uri.parse()?,
