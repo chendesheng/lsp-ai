@@ -48,47 +48,58 @@ editor applies the edit with its normal undo support. These structural checks do
 not prove semantic equivalence: review the result and let your compiler/tests
 check the generated code.
 
-## Rewrite using the first selected comment line
+## Follow selected instruction comments
 
-Start the selected range with a nonempty `//` or `--` comment describing the
-change, followed by the code to modify. LSP-AI additionally offers
-**Refactor: Follow instruction**, with kind `refactor.rewrite.instruction`.
-It uses the same `refactor_actions` model and parameters; no extra configuration
-is needed. For example, select the whole comment and function:
+Start the selection with `//` or `--` comments describing the desired change.
+Consecutive leading comment lines are combined, in order, into one instruction.
+Empty comment lines inside the block are allowed. The first selected line must
+be a comment; leading blank lines and empty instruction blocks are excluded.
+
+If code follows the comments, the action is **Refactor: Follow instruction**,
+with kind `refactor.rewrite.instruction`. Select the comments and target code:
 
 ```typescript
 // rewrite use arrow function
+// keep the existing types
 function add(a: number, b: number): number {
   return a + b;
 }
 ```
 
-Or select the comment and definition in Haskell:
-
 ```haskell
 -- rewrite use list comprehension
+-- keep the function name
 doubleEvens xs = map (* 2) (filter even xs)
 ```
 
-Instructions can also request async/await, try/catch or another code change.
-The literal first selected line must be an instruction comment; leading blank
-lines, empty comments and comment-only selections do not enable this action.
-The instruction comment remains in the file. Only the code after that line,
-through the end of the selection, is replaced. Include function signatures,
-imports or surrounding constructs in the target if changing them is necessary.
-For an import before the instruction comment, add it manually or include an
-appropriate import location after the comment in the selection.
+If the selection contains only instruction comments (plus optional trailing
+whitespace), the action is **Implement: Follow instruction**, with kind
+`source.generate.instruction`. It inserts generated code immediately below the
+comments, using nearby code as context. For example, with `visitors` in scope:
 
-The model receives a separate instruction field, exact target code/range, full
-selection and nearby read-only context. It returns a JSON replacement for the
-target, which becomes one versioned edit at its known range. Identical code
-elsewhere is unaffected. File-version checks, context limits and normal undo
-apply to both refactoring actions. Empty, unchanged, malformed or unsupported
-responses cannot silently modify other files or code outside the selected target;
-an explicit empty replacement can delete the selected target code.
+```typescript
+// implement sort by visitor.status
+// sort ascending, modify visitors in place
+```
 
-Select comment plus code, press `Space a`, then **Refactor: Follow instruction**.
-After rebuilding LSP-AI, use `:lsp-restart` to load the new binary.
+Comment-only selections must include complete comment lines. A selection ending
+at the end of a final comment without its newline is also supported. The server
+adds a newline before generated code if needed, preserving LF/CRLF conventions.
+The instruction comments remain unchanged in both modes. Only selected target
+code or trailing selected whitespace is replaced; surrounding code is read-only.
+Include signatures/imports in the selected target if they need to change.
+
+Both actions use the existing `refactor_actions` model and parameters. No extra
+configuration is needed. The model receives the combined instruction, mode,
+exact target/range, full selection and nearby context. It returns one JSON
+replacement, applied as a single versioned edit at that range. Identical code
+elsewhere is unaffected. An empty replacement may delete code in rewrite mode;
+implementation mode requires nonempty generated code. Malformed, unchanged,
+unsupported and stale responses are rejected.
+
+Select comments with or without code, press `Space a`, then choose the relevant
+**Follow instruction** action. `u` undoes the edit. After rebuilding LSP-AI, use
+`:lsp-restart` to load the new binary.
 
 ## Helix
 

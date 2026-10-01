@@ -106,7 +106,7 @@ There is so much to do for this project and incredible new research and tools co
 
 ## Refactor selected code
 
-Select code and choose `Refactor: Extract function` to generate a same-file helper and call, or start the selection with a `//` or `--` instruction comment and choose `Refactor: Follow instruction` to rewrite the selected code. This optional action is independent of diagnostics and returns versioned edits. See [configuration and Helix usage](docs/refactor-actions.md).
+Select code and choose `Refactor: Extract function` to generate a same-file helper and call, or start the selection with `//` or `--` instruction comments and choose `Refactor: Follow instruction` to rewrite the selected code. Selecting only instruction comments offers `Implement: Follow instruction` to insert new code beneath them. This optional action is independent of diagnostics and returns versioned edits. See [configuration and Helix usage](docs/refactor-actions.md).
 
 ## Explain and fix errors
 
