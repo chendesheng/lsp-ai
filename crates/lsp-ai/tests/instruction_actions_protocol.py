@@ -60,7 +60,7 @@ def main(binary):
             client.send('textDocument/didOpen',{'textDocument':{'uri':uri,'languageId':language,'version':1,'text':original}})
             before=len(requests)
             listed=actions()
-            expected = ['Refactor: Extract function','Refactor: Follow instruction'] if target else ['Implement: Follow instruction']
+            expected = ['Refactor: Follow instruction','Refactor: Extract function'] if target else ['Implement: Follow instruction']
             assert [a['title'] for a in listed]==expected
             assert len(requests)==before
             assert actions(['quickfix'])==[]

@@ -144,7 +144,7 @@ impl DocumentStore {
                 } else {
                     (INSTRUCTION_KIND, "Refactor: Follow instruction")
                 };
-                candidates.push((Operation::FollowInstruction, kind, title));
+                candidates.insert(0, (Operation::FollowInstruction, kind, title));
             }
         }
         candidates
@@ -631,7 +631,8 @@ mod tests {
         let action = state
             .refactor_actions(&instruction_params())
             .unwrap()
-            .pop()
+            .into_iter()
+            .find(|action| action.title == "Refactor: Follow instruction")
             .unwrap();
         let config: RefactorActionsConfig =
             serde_json::from_value(json!({"model":"test"})).unwrap();
