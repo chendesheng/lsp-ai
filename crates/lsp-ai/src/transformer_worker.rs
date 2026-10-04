@@ -906,8 +906,19 @@ async fn do_completion(
         ),
         response.insert_text.clone(),
     );
+    // Keep the menu compact while the text edit retains the complete insertion.
+    let preview = response
+        .insert_text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut chars = preview.chars();
+    let mut label: String = chars.by_ref().take(40).collect();
+    if chars.next().is_some() {
+        label.push('…');
+    }
     let item = CompletionItem {
-        label: format!("ai - {}", response.insert_text),
+        label: format!("ai - {label}"),
         filter_text: Some(filter_text),
         text_edit: Some(lsp_types::CompletionTextEdit::Edit(completion_text_edit)),
         kind: Some(CompletionItemKind::TEXT),
