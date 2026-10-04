@@ -913,8 +913,10 @@ async fn do_completion(
         .collect::<Vec<_>>()
         .join(" ");
     let mut chars = preview.chars();
-    let mut label: String = chars.by_ref().take(40).collect();
+    // Reserve five characters for "ai - "; the complete label is at most 20 characters.
+    let mut label: String = chars.by_ref().take(15).collect();
     if chars.next().is_some() {
+        label.pop();
         label.push('…');
     }
     let item = CompletionItem {
