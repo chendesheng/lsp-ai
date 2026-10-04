@@ -892,6 +892,17 @@ async fn do_completion(
         response.insert_text = post_process_response(response.insert_text, &prompt, post_process);
     }
 
+    // Post-processing may produce no insertion, including an empty completion tag.
+    if response.insert_text.trim().is_empty() {
+        return Ok(Response::new_ok(
+            request.id.clone(),
+            CompletionList {
+                is_incomplete: false,
+                items: vec![],
+            },
+        ));
+    }
+
     // Build and send the response
     let completion_text_edit = TextEdit::new(
         Range::new(
