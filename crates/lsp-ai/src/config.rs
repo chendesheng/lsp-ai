@@ -390,6 +390,7 @@ pub(crate) struct DiagnosticActionsConfig {
     pub(crate) model: String,
     #[serde(default)]
     pub(crate) parameters: Kwargs,
+    /// Fallback for explanations whose original diagnostic has no severity.
     #[serde(default = "explanation_severity_default")]
     pub(crate) explanation_severity: lsp_types::DiagnosticSeverity,
     #[serde(skip)]

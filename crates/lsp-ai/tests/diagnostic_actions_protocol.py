@@ -37,6 +37,7 @@ class Model(BaseHTTPRequestHandler):
         if 'Return ONLY a JSON object' in request['messages'][0]['content']:
             response = json.dumps({'edits': [{'old_text': 'foo()', 'new_text': 'bar()'}]})
         else:
+            assert 'compiler/language-server diagnostic' in request['messages'][0]['content']
             response = 'Declare foo before calling it.'
         data = json.dumps({'choices': [{'message': {'role': 'assistant', 'content': response}}]}).encode()
         self.send_response(200)
@@ -132,14 +133,14 @@ def main(binary, enabled=True):
         legacy_result = call('codeAction/resolve', legacy)
         assert legacy_result['edit']['changes'][uri][0]['newText'] == 'legacy insert'
         if not enabled:
-            assert actions([error]) == []
+            assert actions([dict(error, severity=severity) for severity in (1, 2, 3, 4)]) == []
             call('shutdown', None)
             send('exit', None)
             child.wait(timeout=10)
             assert child.returncode == 0
             print('PASS: feature omitted; legacy action listing and resolution unchanged')
             return
-        listed = actions([error, other, dict(error, severity=2)])
+        listed = actions([error, other, error])
         assert [action['title'] for action in listed] == [
             'Explain: Unknown foo', 'Fix: Unknown foo',
             'Explain: Another foo error', 'Fix: Another foo error']
@@ -163,6 +164,28 @@ def main(binary, enabled=True):
         assert edit['textDocument'] == {'uri': uri, 'version': 1}
         assert edit['edits'][0]['newText'] == 'bar()'
         assert edit['edits'][0]['range']['end']['character'] == 5
+        for severity in (2, 3, 4, None):
+            diagnostic = dict(error, message=f'Foo diagnostic severity {severity}')
+            if severity is None:
+                diagnostic.pop('severity')
+            else:
+                diagnostic['severity'] = severity
+            count = len(received)
+            severity_actions = actions([diagnostic])
+            assert len(severity_actions) == 2
+            assert received[count:] == [], 'Listing actions must not call the model'
+            assert all(action['diagnostics'] == [diagnostic] for action in severity_actions)
+            resolved = call('codeAction/resolve', severity_actions[0])
+            assert 'edit' not in resolved
+            assert received[-1]['diagnostic'] == diagnostic
+            explanation = notifications[-1]['params']['diagnostics'][-1]
+            assert explanation['range'] == error_range
+            assert explanation['severity'] == (severity if severity is not None else 1)
+            assert explanation['source'] == 'lsp-ai'
+            assert actions([explanation]) == []
+            fixed = call('codeAction/resolve', severity_actions[1])
+            assert received[-1]['diagnostic'] == diagnostic
+            assert fixed['edit']['documentChanges'][0]['textDocument'] == {'uri': uri, 'version': 1}
         change(2)
         actions([])  # Barrier: didChange has been processed.
         assert notifications[-1]['params']['diagnostics'] == []
@@ -189,7 +212,7 @@ def main(binary, enabled=True):
         send('exit', None)
         child.wait(timeout=10)
         assert child.returncode == 0
-        print('PASS: dynamic lists, diagnostic publication/retention/cleanup, versioned fixes, stale and in-flight rejection, shutdown')
+        print('PASS: all diagnostic severities, dynamic lists, diagnostic publication/retention/cleanup, versioned fixes, stale and in-flight rejection, shutdown')
     finally:
         slow_release.set()
         if child.poll() is None:
