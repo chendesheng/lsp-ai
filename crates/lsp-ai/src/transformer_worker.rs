@@ -913,14 +913,14 @@ async fn do_completion(
         .collect::<Vec<_>>()
         .join(" ");
     let mut chars = preview.chars();
-    // Reserve five characters for "ai - "; the complete label is at most 20 characters.
-    let mut label: String = chars.by_ref().take(15).collect();
+    // Reserve two characters for "🤖 "; the complete label is at most 20 characters.
+    let mut label: String = chars.by_ref().take(18).collect();
     if chars.next().is_some() {
         label.pop();
         label.push('…');
     }
     let item = CompletionItem {
-        label: format!("ai - {label}"),
+        label: format!("🤖 {label}"),
         filter_text: Some(filter_text),
         text_edit: Some(lsp_types::CompletionTextEdit::Edit(completion_text_edit)),
         kind: Some(CompletionItemKind::TEXT),
