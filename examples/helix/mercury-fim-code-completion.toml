@@ -1,0 +1,30 @@
+# Requires INCEPTION_API_KEY in the environment inherited by Helix.
+# See https://docs.inceptionlabs.ai/capabilities/fim
+[language-server.lsp-ai]
+command = "lsp-ai"
+
+[language-server.lsp-ai.config.memory]
+file_store = { }
+
+[language-server.lsp-ai.config.models.mercury]
+type = "open_ai"
+fim_endpoint = "https://api.inceptionlabs.ai/v1/fim/completions"
+model = "mercury-edit-2"
+auth_token_env_var_name = "INCEPTION_API_KEY"
+max_requests_per_second = 2
+
+[language-server.lsp-ai.config.completion]
+model = "mercury"
+
+[language-server.lsp-ai.config.completion.parameters]
+max_tokens = 128
+max_context = 4096
+temperature = 0.1
+
+[[language]]
+name = "python"
+language-servers = ["pyright", { name = "lsp-ai", only-features = ["completion"] }]
+
+[[language]]
+name = "c-sharp"
+language-servers = ["roslyn", { name = "lsp-ai", only-features = ["completion"] }]

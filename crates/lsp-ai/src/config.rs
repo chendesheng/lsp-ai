@@ -290,6 +290,8 @@ pub(crate) struct OpenAI {
     pub(crate) auth_token: Option<String>,
     // The completions endpoint
     pub(crate) completions_endpoint: Option<String>,
+    // A native FIM endpoint accepting separate prompt and suffix fields
+    pub(crate) fim_endpoint: Option<String>,
     // The chat endpoint
     pub(crate) chat_endpoint: Option<String>,
     // The maximum requests per second

@@ -7,7 +7,7 @@ use tracing::{info, instrument};
 
 use crate::{
     config::{self, ChatMessage, FIM},
-    memory_backends::Prompt,
+    memory_backends::{Prompt, PromptType},
     transformer_worker::{
         DoGenerationResponse, DoGenerationStreamResponse, GenerationStreamRequest,
     },
@@ -125,46 +125,57 @@ impl OpenAI {
     async fn get_completion(
         &self,
         prompt: &str,
+        suffix: Option<&str>,
         params: OpenAIRunParams,
     ) -> anyhow::Result<String> {
         let client = reqwest::Client::new();
         let token = self.get_token()?;
-        let params = json!({
+        let mut body = json!({
             "model": self.configuration.model,
             "max_tokens": params.max_tokens,
-            "n": 1,
             "top_p": params.top_p,
-            "presence_penalty": params.presence_penalty,
-            "frequency_penalty": params.frequency_penalty,
             "temperature": params.temperature,
-            "echo": false,
             "prompt": prompt
         });
+        let endpoint = if let Some(suffix) = suffix {
+            body["suffix"] = json!(suffix);
+            self.configuration
+                .fim_endpoint
+                .as_ref()
+                .context("specify `fim_endpoint` to use native FIM completions")?
+        } else {
+            body["n"] = json!(1);
+            body["presence_penalty"] = json!(params.presence_penalty);
+            body["frequency_penalty"] = json!(params.frequency_penalty);
+            body["echo"] = json!(false);
+            self.configuration.completions_endpoint.as_ref()
+                .context("specify `completions_endpoint` to use completions. Wanted to use `chat` instead? Please specify `chat_endpoint` and `messages`.")?
+        };
         info!(
             "Calling OpenAI compatible completions API with parameters:\n{}",
-            serde_json::to_string_pretty(&params).unwrap()
+            serde_json::to_string_pretty(&body).unwrap()
         );
         let res: OpenAICompletionsResponse = client
-            .post(
-                self.configuration
-                    .completions_endpoint
-                    .as_ref()
-                    .context("specify `completions_endpoint` to use completions. Wanted to use `chat` instead? Please specify `chat_endpoint` and `messages`.")?,
-            )
+            .post(endpoint)
             .bearer_auth(token)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .json(&params)
-            .send().await?
-            .json().await?;
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
         info!(
             "Response from OpenAI compatible completions API:\n{}",
             serde_json::to_string_pretty(&res).unwrap()
         );
         match res {
-            OpenAICompletionsResponse::Success(mut resp) => {
-                Ok(std::mem::take(&mut resp.choices[0].text))
-            }
+            OpenAICompletionsResponse::Success(resp) => Ok(resp
+                .choices
+                .into_iter()
+                .next()
+                .context("OpenAI compatible completions API returned no choices")?
+                .text),
             OpenAICompletionsResponse::Error(error) => {
                 anyhow::bail!(
                     "making OpenAI completions request: {:?}",
@@ -248,10 +259,14 @@ impl OpenAI {
                     self.get_chat(messages, params).await
                 }
                 None => {
-                    self.get_completion(&format_prompt(&code_and_context), params)
+                    self.get_completion(&format_prompt(&code_and_context), None, params)
                         .await
                 }
             },
+            Prompt::FIM(fim) if self.configuration.fim_endpoint.is_some() => {
+                self.get_completion(&fim.prompt, Some(&fim.suffix), params)
+                    .await
+            }
             Prompt::FIM(fim) => match &params.fim {
                 Some(fim_params) => {
                     self.get_completion(
@@ -263,6 +278,7 @@ impl OpenAI {
                             fim.suffix,
                             fim_params.end
                         ),
+                        None,
                         params,
                     )
                     .await
@@ -275,6 +291,19 @@ impl OpenAI {
 
 #[async_trait::async_trait]
 impl TransformerBackend for OpenAI {
+    fn get_prompt_type(&self, params: &Value) -> anyhow::Result<PromptType> {
+        if self.configuration.fim_endpoint.is_some()
+            || params
+                .as_object()
+                .context("params must be a JSON object")?
+                .contains_key("fim")
+        {
+            Ok(PromptType::FIM)
+        } else {
+            Ok(PromptType::ContextAndCode)
+        }
+    }
+
     #[instrument(skip(self))]
     async fn do_generate(
         &self,
@@ -300,7 +329,115 @@ impl TransformerBackend for OpenAI {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::memory_backends::FIMPrompt;
     use serde_json::{from_value, json};
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+        time::Duration,
+    };
+
+    async fn mock_fim_request(
+        native: bool,
+        response: Value,
+    ) -> anyhow::Result<(anyhow::Result<DoGenerationResponse>, Value)> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}/v1/fim/completions", listener.local_addr()?);
+        let server = thread::spawn(move || -> anyhow::Result<Value> {
+            let (mut stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte)?;
+                header.push(byte[0]);
+            }
+            let header = String::from_utf8(header)?.to_lowercase();
+            let length: usize = header
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .context("missing content length")?
+                .parse()?;
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body)?;
+            let response = response.to_string();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response)?;
+            assert!(header.starts_with("post /v1/fim/completions http/1.1"));
+            assert!(header.contains("authorization: bearer test-key\r\n"));
+            Ok(serde_json::from_slice(&body)?)
+        });
+        let endpoint_key = if native {
+            "fim_endpoint"
+        } else {
+            "completions_endpoint"
+        };
+        let mut configuration = json!({"model": "mercury-edit-2", "auth_token": "test-key"});
+        configuration[endpoint_key] = json!(endpoint);
+        let backend = OpenAI::new(from_value(configuration)?);
+        let params = if native {
+            json!({"max_tokens": 32})
+        } else {
+            json!({"max_tokens": 32, "fim": {"start": "<prefix>", "middle": "<suffix>", "end": "<middle>"}})
+        };
+        assert!(matches!(backend.get_prompt_type(&params)?, PromptType::FIM));
+        let prompt = Prompt::FIM(FIMPrompt {
+            prompt: "def add(a, b):\n    return ".into(),
+            suffix: "\n\nassert add(1, 2) == 3".into(),
+        });
+        let result = backend.do_generate(&prompt, params).await;
+        let request = server.join().expect("mock server panicked")?;
+        Ok((result, request))
+    }
+
+    #[tokio::test]
+    async fn native_fim_sends_separate_prefix_and_suffix() -> anyhow::Result<()> {
+        let (result, request) =
+            mock_fim_request(true, json!({"choices": [{"text": "a + b"}]})).await?;
+        assert_eq!(result?.generated_text, "a + b");
+        assert_eq!(
+            request,
+            json!({
+                "model": "mercury-edit-2", "prompt": "def add(a, b):\n    return ",
+                "suffix": "\n\nassert add(1, 2) == 3", "max_tokens": 32,
+                "temperature": 0.1_f32, "top_p": 0.95_f32
+            })
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_fim_reports_api_errors_and_empty_choices() -> anyhow::Result<()> {
+        let (result, _) =
+            mock_fim_request(true, json!({"error": {"message": "invalid model"}})).await?;
+        assert!(result
+            .err()
+            .context("expected API error")?
+            .to_string()
+            .contains("invalid model"));
+        let (result, _) = mock_fim_request(true, json!({"choices": []})).await?;
+        assert!(result
+            .err()
+            .context("expected empty choices error")?
+            .to_string()
+            .contains("no choices"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_fim_preserves_legacy_token_formatted_completion() -> anyhow::Result<()> {
+        let (result, request) =
+            mock_fim_request(false, json!({"choices": [{"text": "a + b"}]})).await?;
+        assert_eq!(result?.generated_text, "a + b");
+        assert_eq!(
+            request["prompt"],
+            "<prefix>def add(a, b):\n    return <suffix>\n\nassert add(1, 2) == 3<middle>"
+        );
+        assert!(request.get("suffix").is_none());
+        assert_eq!(request["n"], 1);
+        assert_eq!(request["echo"], false);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn open_ai_completion_do_generate() -> anyhow::Result<()> {

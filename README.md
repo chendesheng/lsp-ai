@@ -91,10 +91,12 @@ LSP-AI aims to fill this gap by providing a language server that integrates AI-p
     - LSP-AI supports any editor that adheres to the Language Server Protocol (LSP), ensuring that a wide range of editors can leverage the AI capabilities provided by LSP-AI.
 
 5. **Flexible LLM Backend Support**:
-    - Currently, LSP-AI supports llama.cpp, Ollama, OpenAI-compatible APIs, Anthropic-compatible APIs, Gemini-compatible APIs and Mistral AI FIM-compatible APIs, giving developers the flexibility to choose their preferred backend. This list will soon grow.
+    - Currently, LSP-AI supports llama.cpp, Ollama, OpenAI-compatible APIs (including native FIM endpoints such as Inception Mercury), Anthropic-compatible APIs, Gemini-compatible APIs and Mistral AI FIM-compatible APIs, giving developers the flexibility to choose their preferred backend. This list will soon grow.
 
 6. **Future-Ready**:
     - LSP-AI is committed to staying updated with the latest advancements in LLM-driven software development.
+
+For Mercury autocomplete, use the [Helix FIM configuration](examples/helix/mercury-fim-code-completion.toml) and export `INCEPTION_API_KEY` before starting Helix. The `open_ai` backend's `fim_endpoint` sends the code before the cursor as `prompt` and the code after it as `suffix`, and reads the completion from `choices[].text`.
 
 # Roadmap
 
